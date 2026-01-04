@@ -1,19 +1,30 @@
--- ECHO RESCUE DATABASE SETUP
-CREATE DATABASE IF NOT EXISTS ECHO_RESCUE;
-USE DATABASE ECHO_RESCUE;
-CREATE SCHEMA IF NOT EXISTS PUBLIC;
+-- 1. SETUP
+USE SCHEMA ECHO_RESCUE.PUBLIC;
 
--- Create the table for processed flood data
-CREATE OR REPLACE TABLE V_BLOCKED_ROADS (
-    ROAD_NAME STRING,
-    SEVERITY STRING,
-    LATITUDE FLOAT,
-    LONGITUDE FLOAT,
-    REPORTED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-);
+-- 2. PROCESS FLOODS (Unpacking the box)
+CREATE OR REPLACE TABLE FLOOD_ZONES AS
+SELECT 
+    'Sentinel-1 Detected' as source,
+    TO_GEOGRAPHY(value:geometry) as geo_polygon
+FROM RAW_FLOODS,
+LATERAL FLATTEN(input => $1:features); 
 
--- Insert dummy data for the demo
-INSERT INTO V_BLOCKED_ROADS (ROAD_NAME, SEVERITY, LATITUDE, LONGITUDE) VALUES 
-('M-1 Motorway', 'CRITICAL', 34.0151, 71.5249),
-('N-55 Indus Highway', 'BLOCKED', 33.6844, 73.0479),
-('Kabul River Bridge', 'WARNING', 34.1980, 72.0300);
+-- 3. PROCESS ROADS (Unpacking the box)
+CREATE OR REPLACE TABLE ROAD_NETWORK AS
+SELECT 
+    value:properties:name::STRING as road_name,
+    value:properties:highway::STRING as road_type,
+    TO_GEOGRAPHY(value:geometry) as geo_line
+FROM RAW_ROADS,
+LATERAL FLATTEN(input => $1:features) 
+WHERE value:properties:name IS NOT NULL;
+
+-- 4. THE RESULT: FIND BLOCKED ROADS
+SELECT 
+    r.road_name,
+    r.road_type,
+    ST_ASTEXT(r.geo_line) as road_coordinates,
+    'BLOCKED' as status
+FROM ROAD_NETWORK r
+JOIN FLOOD_ZONES f
+ON ST_INTERSECTS(r.geo_line, f.geo_polygon);
